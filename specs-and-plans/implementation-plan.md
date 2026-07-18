@@ -49,6 +49,7 @@ All environment-specific and secret values are injected — nothing hardcoded in
 | `ENV_NAME` | Plain | `local` (hardcoded in `appsettings.Development.json`) | `dev` / `staging` / `production` | EB env property; `#{ENV_NAME}#` token in ECS task def |
 | `LOKI_URI` | Plain | `http://loki:3100` (Docker Compose service name) | contractor-provided internal URI | EB env property |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Plain | `http://otel-collector:4317` (Docker Compose) | contractor-provided internal URI | EB env property |
+| `ANGULAR_OTLP_ENDPOINT` | Plain | `http://otel-collector:4318` (Docker Compose, set on the .NET service) | OTel Collector HTTP endpoint (port 4318, not gRPC 4317) | EB env property |
 | `SENTRY_DSN` | Secret | placeholder in `environment.ts` | Secrets Manager → EB env property | Secrets Manager (`wbi-ai/chat/sentry-dsn`) |
 | `SENTRY_ORG_TOKEN` | Secret | n/a (Grafana datasource only) | Secrets Manager → ECS task (`secrets` array) | Secrets Manager (`wbi-monitoring/grafana/sentry-token`) |
 | `GF_DATABASE_HOST` | Plain | n/a (SQLite in PoC) | contractor-provided RDS hostname | ECS task def `environment` array |
@@ -59,7 +60,7 @@ All environment-specific and secret values are injected — nothing hardcoded in
 | `GRAFANA_ADMIN_PASSWORD` | Secret | local `.env` file (gitignored) | n/a (Cognito/ALB handles auth in AWS) | local `.env` only |
 | `window.__env.envName` | Runtime | `local` (fallback in `environment.ts`) | sourced from `ENV_NAME` by .NET, served in `window.__env` | .NET serves inline script at page load |
 | `window.__env.sentryDsn` | Runtime | placeholder (fallback in `environment.ts`) | sourced from `SENTRY_DSN` by .NET, served in `window.__env` | .NET serves inline script at page load |
-| `window.__env.otlpEndpoint` | Runtime | `http://localhost:4318` (fallback) | sourced from `OTEL_EXPORTER_OTLP_ENDPOINT` by .NET, served in `window.__env` | .NET serves inline script at page load |
+| `window.__env.otlpEndpoint` | Runtime | `http://localhost:4318` (fallback) | sourced from `ANGULAR_OTLP_ENDPOINT` by .NET, served in `window.__env` | .NET serves inline script at page load |
 
 ECS task definitions use `environment` array for plain values and `secrets` array (Secrets Manager ARN reference) for secrets — no secret values in the repo.
 
@@ -337,7 +338,9 @@ Sections:
   - Confirm no Entra token is required for Loki push or OTLP push (internal-only endpoints, network boundary is sufficient)
   - Confirm Blackbox probe targets are all unauthenticated endpoints only
 - Any `monitoring/` structural changes needed to support a second service cleanly (e.g. naming conventions, dashboard template)
-- Checklist: what a future session needs to provide to onboard a new service
+- Checklist: what a future session needs to provide to onboard a new service:
+  - Create a new Sentry **project** (Browser/JavaScript) → get a new **DSN** → store in Secrets Manager under a service-specific path (e.g. `wbi-ai/<service>/sentry-dsn`) → set as `SENTRY_DSN` EB env property
+  - The Grafana **org token** (`wbi-monitoring/grafana/sentry-token`) is reused — it authenticates at org level and can query any project; no change needed per onboarding
 
 **Success criteria:**
 - The onboarding prompt, when applied to a hypothetical second service, produces no ambiguities
