@@ -1,0 +1,27 @@
+# Observability platform — local development stack
+# Provides: Prometheus, Loki, Grafana, OTel Collector, Blackbox Exporter
+#
+# The monitored application (AI Chat Middleware) runs separately in its own repo.
+# Connect it to this stack by adding it to the shared network:
+#
+#   networks:
+#     - observability
+#   environment:
+#     - LOKI_URI=http://loki:3100
+#     - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+#     - ANGULAR_OTLP_ENDPOINT=http://otel-collector:4318
+#     - ENV_NAME=local
+#     - SENTRY_DSN=<dsn>
+#
+# Prerequisites: copy .env.example to .env and fill in values.
+#
+# Usage:
+#   docker compose up -d
+#   docker compose down -v   # also removes volumes
+
+networks:
+  observability:
+    name: observability        # stable name so external compose files can join
+
+# Filled in during Chunk 3
+services: {}

@@ -39,6 +39,16 @@ Build: 0 errors, 1 bundle budget warning (see gotchas)
 
 Coverage: 70.2% statements / 62.8% branches (up from 67.2% / 60.3%).
 
+### Manual verification (completed)
+
+| Check | Result |
+|---|---|
+| `window.__SENTRY__` in console | Object with `version: "10.66.0"` ✅ |
+| Error thrown via Angular `ErrorHandler` appears in sentry.io | ✅ |
+| `environment` tag on Sentry event | `local` ✅ |
+| `trace_id` tag on Sentry event | `4628a62ca9a8453e8d061e37312e996d` (real OTel trace ID, `beforeSend` hook working) ✅ |
+| OTel exporting to `localhost:4318` | Attempts visible in Network tab; CORS failures expected until Chunk 3 ✅ |
+
 ---
 
 ## ⚠️ Gotchas / decisions that differ from the plan
