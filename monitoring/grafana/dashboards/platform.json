@@ -1,0 +1,245 @@
+{
+  "__inputs": [],
+  "__requires": [
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" }
+  ],
+  "annotations": { "list": [] },
+  "description": "Platform meta-monitoring — OTel Collector pipeline health, Prometheus TSDB, Loki ingestion, platform service uptime",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Collector: Export Queue Depth",
+      "id": 1,
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "otelcol_exporter_queue_size",
+          "legendFormat": "{{exporter}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Non-zero sustained value means downstream pressure (Prometheus or Loki slow/down).",
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Collector: Export Failures",
+      "id": 2,
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "otelcol_exporter_queue_size",
+          "legendFormat": "{{exporter}} queue",
+          "refId": "A"
+        }
+      ],
+      "description": "Non-zero = exporter queue backing up. Sustained = downstream (Prometheus or Loki) is slow or down.",
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Collector: Batch Metadata Cardinality",
+      "id": 3,
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "otelcol_processor_batch_metadata_cardinality",
+          "legendFormat": "metadata combinations",
+          "refId": "A"
+        }
+      ],
+      "description": "Number of distinct metadata combinations in the batch processor. Sudden rise = high-cardinality attributes.",
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Collector: Memory RSS",
+      "id": 4,
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "otelcol_process_memory_rss",
+          "legendFormat": "RSS bytes",
+          "refId": "A"
+        }
+      ],
+      "description": "Headroom before memory_limiter kicks in (limit: 400 MiB / 512 MiB Fargate).",
+      "fieldConfig": {
+        "defaults": { "unit": "bytes" },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "RSS bytes" },
+            "properties": [
+              { "id": "custom.thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "green", "value": null },
+                { "color": "yellow", "value": 314572800 },
+                { "color": "red",    "value": 419430400 }
+              ]}}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Prometheus: Scrape Target Health",
+      "id": 5,
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "up{job!=\"platform-self\"}",
+          "legendFormat": "{{job}} {{env}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Any 0 = a service scrape target is down.",
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "max": 1 }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Prometheus: Scrape Duration by Target",
+      "id": 6,
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "scrape_duration_seconds",
+          "legendFormat": "{{job}} {{instance}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Targets approaching scrape_timeout (10s) are a warning sign.",
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Prometheus: Ingest Rate",
+      "id": 7,
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 21 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(prometheus_tsdb_head_samples_appended_total[5m])",
+          "legendFormat": "samples/s",
+          "refId": "A"
+        }
+      ],
+      "description": "Total samples/sec flowing in. Use with TSDB size to predict when EFS is needed.",
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Prometheus: TSDB Head Chunks",
+      "id": 8,
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 21 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "prometheus_tsdb_head_chunks",
+          "legendFormat": "chunks",
+          "refId": "A"
+        }
+      ],
+      "description": "Index growth over time. Combined with ingest rate predicts EFS need.",
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Loki: Ingestion Rate",
+      "id": 9,
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(loki_distributor_bytes_received_total[5m])",
+          "legendFormat": "bytes/s",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Loki: Active Streams",
+      "id": 10,
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "loki_ingester_streams_created_total",
+          "legendFormat": "streams created",
+          "refId": "A"
+        }
+      ],
+      "description": "Sudden rise = high-cardinality label introduced. propertiesAsLabels must stay [].",
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Loki: Chunk Flush Lag (p99)",
+      "id": 11,
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 35 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, loki_ingester_chunk_age_seconds_bucket)",
+          "legendFormat": "p99 flush lag",
+          "refId": "A"
+        }
+      ],
+      "description": "How stale the oldest unflushed chunks are. High lag = storage pressure.",
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "Platform Service Uptime",
+      "id": 12,
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 35 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "up{job=\"platform-self\"}",
+          "legendFormat": "{{component}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Any 0 = platform service is down.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["platform", "meta-monitoring"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Platform Meta-Monitoring",
+  "uid": "platform",
+  "version": 1
+}

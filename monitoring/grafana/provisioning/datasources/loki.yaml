@@ -1,0 +1,17 @@
+apiVersion: 1
+datasources:
+  - name: Loki
+    type: loki
+    uid: loki
+    url: http://loki:3100
+    access: proxy
+    isDefault: false
+    jsonData:
+      derivedFields:
+        # Auto-link TraceId values in log lines to the Tempo trace explorer.
+        # Added now so historical logs gain the link when Tempo is deployed in Chunk 6.
+        # datasourceUid: tempo references the Tempo datasource provisioned in Chunk 6.
+        - name: TraceID
+          matcherRegex: '"TraceId":"([a-f0-9]{32})"'
+          url: '${__value.raw}'
+          datasourceUid: tempo

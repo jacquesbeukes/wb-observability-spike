@@ -1,0 +1,88 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins:
+            # Local Angular dev (any port on localhost)
+            - "http://localhost:*"
+            # EB environments — replace with the actual domain before AWS deployment
+            - "https://*.your-domain.com"
+
+processors:
+  # memory_limiter must be first — refuses ingestion before downstream processors
+  # fill the 512 MB Fargate allocation. 400 MiB = ~80% of allocation.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 400
+    spike_limit_mib: 80
+
+  # Enrich all telemetry with cloud.region, aws.ecs.cluster.arn, etc.
+  # override: false means service-provided attributes are not overwritten.
+  resourcedetection:
+    detectors: [env, ecs, ec2]
+    timeout: 5s
+    override: false
+
+  # Strip query strings from http.url metric labels to prevent Prometheus cardinality
+  # explosion from Angular auto-instrumentation writing full URLs as label values.
+  transform/sanitize_metrics:
+    metric_statements:
+      - context: datapoint
+        statements:
+          - replace_pattern(attributes["http.url"], "\\?.*", "")
+
+  # batch must be last before the exporter
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+
+exporters:
+  prometheusremotewrite:
+    endpoint: http://prometheus:9090/api/v1/write
+    resource_to_telemetry_conversion:
+      enabled: true
+  # The standalone `loki` exporter was removed from otel-collector-contrib in v0.80+.
+  # Loki 2.9+ accepts OTLP natively at /otlp/v1/logs — use otlphttp instead.
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+  # Traces go nowhere until Tempo is added in Chunk 6 — debug exporter at
+  # basic verbosity keeps the /v1/traces route alive so the browser stops 404ing.
+  debug/traces:
+    verbosity: basic
+
+# health_check: liveness probe on :13133 (OTel Collector default)
+# Internal Prometheus metrics served by service.telemetry.metrics on :18888
+# (8888 is in use by another process on this host; 18888 is the local substitute)
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  # Expose internal Collector metrics in Prometheus format at :18888/metrics.
+  # Uses the Prometheus pull exporter reader introduced in v0.89+.
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 18888
+  extensions: [health_check]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, transform/sanitize_metrics, batch]
+      exporters: [prometheusremotewrite]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters: [otlphttp/loki]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters: [debug/traces]

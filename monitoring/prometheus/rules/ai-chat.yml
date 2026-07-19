@@ -1,0 +1,25 @@
+groups:
+  - name: ai_chat_recording
+    interval: 60s
+    rules:
+      # prometheus-net emits `endpoint` and `code` labels (not OTel http_route/http_response_status_code).
+      # Using http_request_duration_seconds_count as the request counter — prometheus-net
+      # does not emit a separate http_requests_total counter.
+      - record: job:http_requests_total:rate5m
+        expr: >
+          sum by (job, env, endpoint, code)
+            (rate(http_request_duration_seconds_count[5m]))
+
+      - record: job:http_request_duration_seconds:p95
+        expr: >
+          histogram_quantile(0.95,
+            sum by (job, env, le)
+              (rate(http_request_duration_seconds_bucket[5m])))
+
+      - record: job:http_errors:rate5m
+        expr: >
+          sum by (job, env)
+            (rate(http_request_duration_seconds_count{code=~"5.."}[5m]))
+          /
+          sum by (job, env)
+            (rate(http_request_duration_seconds_count[5m]))

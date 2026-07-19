@@ -35,7 +35,7 @@ The application being monitored lives in a separate repo (`C:\dev\ai-chat-spike\
 
 ## Active work
 
-Multi-session implementation in progress. Current state: **Chunk 2 complete**.
+Multi-session implementation in progress. Current state: **Chunk 3 complete**.
 
 - Full plan: `specs-and-plans/implementation-plan.md`
 - Architecture spec: `specs-and-plans/spec.md`
@@ -64,13 +64,18 @@ The platform compose defines a network named `observability`. App services join 
 
 ECS Fargate cluster `monitoring`, `ap-southeast-2`. Five services: Prometheus, Loki, Grafana, OTel Collector, Blackbox Exporter. Internal service discovery via ECS Service Connect (stable DNS names matching Docker Compose service names).
 
-## Chunk 3 starting point
+## OTel Collector config gotchas (Chunk 3 findings)
 
-Next session builds all of `monitoring/` and the Docker Compose services. Before starting:
-- Docker Desktop must be running
-- `.env` must exist (copy `.env.example`, fill in `GRAFANA_ADMIN_PASSWORD` and `SENTRY_ORG_TOKEN`)
-- The AI Chat Middleware must be running and reachable (for scrape target smoke tests)
-- App's compose file needs the external network block and env vars listed in `README.md`
+- **`loki` exporter removed** from `otel-collector-contrib` v0.80+. Use `otlphttp/loki` with endpoint `http://loki:3100/otlp` — Loki 2.9+ accepts OTLP natively.
+- **Internal metrics port**: `health_check` extension is for liveness only (JSON). Internal Prometheus metrics require `service.telemetry.metrics.readers` with a Prometheus pull exporter reader. Port 8888 is in use on this dev machine; local config uses 18888. `prometheus-aws.yml` correctly targets 8888 (free in ECS).
+- **Grafana alert provisioning**: every alert rule query must include `relativeTimeRange: { from: N, to: 0 }` or Grafana refuses to start.
+- **Sentry datasource alerting**: `grafana-sentry-datasource` cannot be used as a Grafana Unified Alerting data source. Sentry JS error alerts require a separate integration (Sentry webhook → Grafana OnCall, or polling via custom metric).
+
+## Chunk 4 starting point
+
+Next session writes `specs-and-plans/aws-infra-spec.md`. Before starting:
+- RDS cluster decision is the contractor's call — the spec states the requirement and leaves new vs existing open
+- Confirm EB application name, .NET app port, and EB environment names (dev/staging/production)
 
 ## File naming conventions
 

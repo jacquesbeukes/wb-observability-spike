@@ -1,0 +1,58 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 60s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # AI Chat Middleware — .NET backend (Docker Compose service name)
+  - job_name: ai-chat
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      # App runs natively on the host (not in Docker); host.docker.internal resolves
+      # to the host machine from inside any Docker container.
+      - targets: ['host.docker.internal:5113']
+        labels:
+          env: local
+          service: ai-chat
+
+  # Blackbox probes — 30s interval; targets are passed via relabelling
+  - job_name: blackbox
+    scrape_interval: 30s
+    scrape_timeout: 15s
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+    static_configs:
+      - targets:
+          - http://host.docker.internal:5113/health
+        labels:
+          service: ai-chat
+
+  # Platform self-monitoring — stable Docker Compose hostnames, no EC2 SD needed
+  - job_name: platform-self
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    static_configs:
+      - targets: ['prometheus:9090']
+        labels: { component: prometheus }
+      - targets: ['loki:3100']
+        labels: { component: loki }
+      # Collector health-check port — 18888 locally (8888 in use on this host);
+      # update to :8888 in prometheus-aws.yml for ECS where the port is free.
+      - targets: ['otel-collector:18888']
+        labels: { component: otel-collector }
+      - targets: ['blackbox-exporter:9115']
+        labels: { component: blackbox-exporter }

@@ -1,0 +1,13 @@
+FROM prom/prometheus
+
+# AWS scrape config (ec2_sd_configs) is baked in.
+# prometheus.yml (static_configs) is local Docker Compose only — NOT copied here.
+COPY prometheus/prometheus-aws.yml /etc/prometheus/prometheus.yml
+COPY prometheus/rules/ /etc/prometheus/rules/
+
+# --web.enable-remote-write-receiver is required for the OTel Collector
+# prometheusremotewrite exporter. Without this flag Prometheus returns HTTP 404
+# on every flush and all OTel-sourced metrics are silently dropped.
+ENTRYPOINT [ "/bin/prometheus", \
+  "--config.file=/etc/prometheus/prometheus.yml", \
+  "--web.enable-remote-write-receiver" ]

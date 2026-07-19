@@ -126,7 +126,7 @@ ECS task definitions use `environment` array for plain values and `secrets` arra
 
 ---
 
-### Chunk 3 — Local platform stack
+### Chunk 3 — Local platform stack ✅ COMPLETE
 **Session:** 3
 
 **What gets built:**
@@ -417,6 +417,6 @@ Chunk 1 (Backend) → Chunk 2 (Frontend) → Chunk 3 (Local stack)
 2. ~~**EB internal hostnames/ports**~~ — **Resolved**: EC2 service discovery is the official scrape strategy. Prometheus discovers instances dynamically via `ec2_sd_configs` filtered by the EB application name tag and maps the `env` EC2 tag to a Prometheus label. No per-instance hostnames are needed. Contractor must provide EB application name, per-service app port, and confirmation that `env` tags are set on each EB environment.
 3. ~~**OTel Collector CORS**~~ — **Resolved**: Angular is served as static files by Kestrel via nginx; port 4318 is always a different origin. CORS headers on the OTel Collector HTTP receiver are unconditionally required in all environments. See Chunk 3 gotcha.
 4. ~~**Grafana Sentry plugin**~~ — **Resolved**: use `grafana-sentry-datasource` (official Grafana Labs plugin). Installed via `grafana-cli plugins install grafana-sentry-datasource` baked into the Grafana Dockerfile. Auth via `SENTRY_ORG_TOKEN` env var; value in Secrets Manager (`wbi-monitoring/grafana/sentry-token`).
-5. **RDS cluster**: Re-use an existing cluster or create a new one? (TBD before Chunk 4 so the AWS handoff spec can be complete.)
+5. ~~**RDS cluster**~~ — **Resolved**: contractor's decision — the spec will state the requirement (a PostgreSQL database for Grafana state) and leave the choice of new vs existing cluster to the contractor.
 6. ~~**SSM access**~~ — **Resolved**: SSM is not in use. Grafana is accessed via an ALB with a Cognito User Pool authorizer federated to Azure AD — same pattern as existing services. Required from PoC; no phased upgrade needed.
 7. ~~**Angular build env injection**~~ — **Resolved**: `window.__env` served by the .NET backend. The .NET app emits `window.__env = { envName, sentryDsn, otlpEndpoint }` from its own environment variables at page load. Angular reads with local dev fallbacks. No per-environment Angular build required. Services that already have `fileReplacements` in `angular.json` may use those instead — the onboarding prompt will check.

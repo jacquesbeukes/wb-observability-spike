@@ -1,0 +1,78 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 60s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # AI Chat Middleware — EC2 service discovery across all EB environments.
+  # Prometheus scrapes each instance directly (not via the ALB) so recording
+  # rules aggregate across ASG instances by job + env without config changes on scale.
+  - job_name: ai-chat
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    metrics_path: /metrics
+    # .NET app serves HTTP; TLS terminates at the EB ALB
+    scheme: http
+
+    ec2_sd_configs:
+      - region: ap-southeast-2
+        # Port the .NET app listens on per EC2 instance — contractor-provided
+        port: #{AI_CHAT_APP_PORT}#
+        filters:
+          - name: tag:elasticbeanstalk:application-name
+            values: [#{EB_APPLICATION_NAME}#]
+
+    relabel_configs:
+      # Drop instances not in the running state
+      - source_labels: [__meta_ec2_instance_state]
+        regex: running
+        action: keep
+      # Map the `env` EC2 tag to a Prometheus label.
+      # EB sets env=dev/staging/production on each environment;
+      # the tag propagates to all EC2 instances in that environment automatically.
+      - source_labels: [__meta_ec2_tag_env]
+        target_label: env
+      # Set the service label
+      - target_label: service
+        replacement: ai-chat
+
+  # Blackbox probes — static targets (public-facing URLs, not EC2 instances)
+  - job_name: blackbox
+    scrape_interval: 30s
+    scrape_timeout: 15s
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+    static_configs:
+      - targets:
+          # Only unauthenticated endpoints — AD-protected endpoints produce false-positive uptime
+          - https://#{AI_CHAT_DEV_HOST}#/health
+          - https://#{AI_CHAT_STAGING_HOST}#/health
+          - https://#{AI_CHAT_PROD_HOST}#/health
+        labels:
+          service: ai-chat
+
+  # Platform self-monitoring — ECS Service Connect hostnames match Docker Compose names;
+  # static_configs works in both environments because platform hostnames are stable
+  - job_name: platform-self
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    static_configs:
+      - targets: ['prometheus:9090']
+        labels: { component: prometheus }
+      - targets: ['loki:3100']
+        labels: { component: loki }
+      - targets: ['otel-collector:8888']
+        labels: { component: otel-collector }
+      - targets: ['blackbox-exporter:9115']
+        labels: { component: blackbox-exporter }

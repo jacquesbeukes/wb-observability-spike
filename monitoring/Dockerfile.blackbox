@@ -1,0 +1,5 @@
+FROM prom/blackbox-exporter
+
+COPY blackbox/blackbox.yml /etc/blackbox/blackbox.yml
+
+CMD ["--config.file=/etc/blackbox/blackbox.yml"]

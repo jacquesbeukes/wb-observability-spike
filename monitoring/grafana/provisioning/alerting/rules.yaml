@@ -1,0 +1,156 @@
+apiVersion: 1
+groups:
+  # ── AI Chat Middleware service rules ─────────────────────────────────────────
+  - name: ai-chat
+    folder: AI Chat
+    interval: 1m
+    rules:
+      - uid: ai-chat-high-error-rate
+        title: AiChatHighErrorRate
+        condition: A
+        for: 5m
+        labels:
+          severity: critical
+          service: ai-chat
+          env: production
+        annotations:
+          summary: "AI Chat high HTTP error rate"
+          description: "HTTP 5xx error rate above 5% for 5m in production."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: >
+                job:http_errors:rate5m{job="ai-chat", env="production"} > 0.05
+              # recording rule now uses prometheus-net label names (code/endpoint)
+              refId: A
+              instant: true
+
+      - uid: ai-chat-high-latency
+        title: AiChatHighLatency
+        condition: A
+        for: 5m
+        labels:
+          severity: warning
+          service: ai-chat
+          env: production
+        annotations:
+          summary: "AI Chat high p95 latency"
+          description: "HTTP p95 latency above 10 seconds for 5m in production."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: >
+                job:http_request_duration_seconds:p95{job="ai-chat", env="production"} > 10
+              refId: A
+              instant: true
+
+      # EndpointDown uses for: 2m — two consecutive 30s probe failures before alerting
+      - uid: ai-chat-endpoint-down
+        title: AiChatEndpointDown
+        condition: A
+        for: 2m
+        labels:
+          severity: critical
+          service: ai-chat
+          env: production
+        annotations:
+          summary: "AI Chat endpoint down"
+          description: "Blackbox probe_success == 0 for {{ $labels.instance }}."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: >
+                probe_success{job="blackbox", service="ai-chat"} == 0
+              refId: A
+              instant: true
+
+      - uid: ai-chat-signalr-drop
+        title: SignalRConnectionsDrop
+        condition: A
+        for: 5m
+        labels:
+          severity: critical
+          service: ai-chat
+          env: production
+        annotations:
+          summary: "SignalR active connections dropped to zero"
+          description: "signalr_connections_active == 0 in production for 5m."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: >
+                signalr_connections_active{env="production"} == 0
+              refId: A
+              instant: true
+
+      # LogQL-based alert — TenantErrorSpike
+      - uid: ai-chat-tenant-error-spike
+        title: TenantErrorSpike
+        condition: A
+        for: 2m
+        labels:
+          severity: warning
+          service: ai-chat
+          env: production
+        annotations:
+          summary: "Tenant error spike"
+          description: "More than 50 error log lines from the same TenantId in 2 minutes."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: loki
+            model:
+              expr: >
+                sum by (TenantId)
+                  (count_over_time({service="ai-chat", env="production"} | json | level="Error" [2m]))
+                > 50
+              refId: A
+              instant: true
+
+  # ── Platform self-monitoring ──────────────────────────────────────────────────
+  - name: platform
+    folder: Platform
+    interval: 1m
+    rules:
+      # Fires if the Collector drops ANY data for a sustained 5m — dashboards will
+      # appear to work but metrics / logs are silently incomplete.
+      - uid: collector-dropping-data
+        title: CollectorDroppingData
+        condition: A
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "OTel Collector is dropping data"
+          description: "memory_limiter is shedding telemetry. Check Collector memory usage and consider increasing Fargate allocation."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                (rate(otelcol_processor_dropped_metric_points[5m]) > 0)
+                or
+                (rate(otelcol_processor_dropped_log_records[5m]) > 0)
+              refId: A
+              instant: true

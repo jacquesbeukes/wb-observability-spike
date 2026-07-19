@@ -23,5 +23,77 @@ networks:
   observability:
     name: observability        # stable name so external compose files can join
 
-# Filled in during Chunk 3
-services: {}
+services:
+  prometheus:
+    image: prom/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --web.enable-remote-write-receiver
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - observability
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - ./monitoring/loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    networks:
+      - observability
+    restart: unless-stopped
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter
+    volumes:
+      - ./monitoring/blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    ports:
+      - "9115:9115"
+    networks:
+      - observability
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./monitoring/otel-collector/otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"   # gRPC OTLP — .NET backend
+      - "4318:4318"   # HTTP OTLP — Angular frontend (browsers cannot use gRPC)
+      - "18888:18888" # Collector internal metrics (platform-self scrape target; 8888 in use on this host)
+    networks:
+      - observability
+    restart: unless-stopped
+
+  grafana:
+    build:
+      context: ./monitoring
+      dockerfile: Dockerfile.grafana
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - SENTRY_ORG_TOKEN=${SENTRY_ORG_TOKEN}
+    networks:
+      - observability
+    depends_on:
+      - prometheus
+      - loki
+    restart: unless-stopped
+
+volumes:
+  loki-data:
+  grafana-data:
