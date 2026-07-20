@@ -5,30 +5,56 @@
 
 ## Architecture Sketch
 
-```
-[AI Chat Middleware: .NET 10 + Angular]
-  ├── /metrics endpoint (prometheus-net)
-  ├── Serilog → Loki sink (HTTP push)
-  ├── OTel SDK (gRPC OTLP) ─────────────────┐
-  └── Sentry JS SDK (cloud, per-env)        │
-                                             ▼
-monitoring/ (single source of truth)   OTel Collector (4317/4318, :8888 internal metrics)
-  ├── prometheus.yml                         ├── → Prometheus (remote-write)
-  ├── prometheus/rules/ai-chat.yml           ├── → Loki (push)
-  ├── loki.yml                               └── → Tempo (traces, Chunk 6 only)
-  ├── blackbox.yml               Prometheus ← Blackbox Exporter (scrape :30s)
-  ├── otel-collector.yml         Prometheus ← platform self-scrape (:9090, :3100, :8888, :9115)
-  ├── grafana/provisioning/                  │
-  │   ├── datasources/               Grafana (single pane of glass)
-  │   │   └── loki.yaml (Derived Fields → Tempo)
-  │   ├── dashboards/                    ├── env template var filters service panels
-  │   └── alerting/                      └── platform.json (meta-monitoring dashboard)
-  └── grafana/dashboards/
-      ├── ai-chat.json
-      └── platform.json
+```mermaid
+graph TB
+    subgraph App["AI Chat Middleware · .NET 10 + Angular"]
+        Metrics["/metrics\nprometheus-net"]
+        OTelProxy["/otlp proxy\nforwards Angular metrics"]
+        OTelSDK["OTel SDK\ngRPC OTLP"]
+        SerilogSink["Serilog\nLoki sink"]
+        SentryJS["Sentry JS SDK\n(cloud, per-env)"]
+    end
 
-Prometheus scrapes EC2 instances directly via ec2_sd_configs (not through the EB ALB)
+    subgraph Platform["monitoring/ — platform services"]
+        Collector["OTel Collector\n4317 · 4318 · 8888"]
+        Prometheus["Prometheus :9090"]
+        Loki["Loki :3100"]
+        Grafana["Grafana\nsingle pane of glass"]
+        Blackbox["Blackbox Exporter :9115"]
+        Tempo["Tempo\n(Chunk 6)"]
+    end
+
+    OTelProxy -->|HTTP :4318| Collector
+    OTelSDK -->|gRPC :4317| Collector
+    SerilogSink -->|HTTP push| Loki
+    Prometheus -->|scrape /metrics| Metrics
+    Prometheus -->|scrape /probe| Blackbox
+
+    Collector -->|remote-write| Prometheus
+    Collector -->|push| Loki
+    Collector -->|traces Chunk 6| Tempo
+
+    Prometheus --> Grafana
+    Loki --> Grafana
+    SentryJS --> Grafana
+    Tempo --> Grafana
+```
+
+```
+monitoring/               ← single source of truth for all platform config
+  prometheus/
+    prometheus.yml        ← local static scrape
+    prometheus-aws.yml    ← AWS ec2_sd_configs (baked into Dockerfile.prometheus)
+    rules/ai-chat.yml     ← recording rules (evaluated by Prometheus)
+  loki/loki.yml
+  blackbox/blackbox.yml
+  otel-collector/otel-collector.yml
+  grafana/provisioning/   ← datasources, dashboards, alerting
+  grafana/dashboards/     ← ai-chat.json, platform.json
+  Dockerfile.*            ← one per service (config baked in at build time)
+
 Deploy path: Azure DevOps → ECR (custom images) → ECS Fargate (monitoring cluster)
+Prometheus scrapes EC2 instances directly via ec2_sd_configs (not through the EB ALB)
 ```
 
 **Key design decisions:**
@@ -47,20 +73,20 @@ All environment-specific and secret values are injected — nothing hardcoded in
 | Variable | Type | Local (Docker Compose) | EB / ECS (injected at deploy) | Injected by |
 |---|---|---|---|---|
 | `ENV_NAME` | Plain | `local` (hardcoded in `appsettings.Development.json`) | `dev` / `staging` / `production` | EB env property; `#{ENV_NAME}#` token in ECS task def |
-| `LOKI_URI` | Plain | `http://loki:3100` (Docker Compose service name) | contractor-provided internal URI | EB env property |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Plain | `http://otel-collector:4317` (Docker Compose) | contractor-provided internal URI | EB env property |
-| `ANGULAR_OTLP_ENDPOINT` | Plain | `http://otel-collector:4318` (Docker Compose, set on the .NET service) | OTel Collector HTTP endpoint (port 4318, not gRPC 4317) | EB env property |
+| `LOKI_URI` | Plain | `http://loki:3100` (Docker Compose service name) | Infra team-provided internal URI | EB env property |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Plain | `http://otel-collector:4317` (Docker Compose) | Infra team-provided internal URI | EB env property |
+| `ANGULAR_OTLP_ENDPOINT` | Plain | `http://localhost:4318` (fallback in `environment.ts`) | n/a — Angular always sends to `/otlp` on the .NET app (same-origin proxy); this variable is no longer injected as an EB env property | n/a (see Chunk 4c) |
 | `SENTRY_DSN` | Secret | placeholder in `environment.ts` | Secrets Manager → EB env property | Secrets Manager (`wbi-ai/chat/sentry-dsn`) |
 | `SENTRY_ORG_TOKEN` | Secret | n/a (Grafana datasource only) | Secrets Manager → ECS task (`secrets` array) | Secrets Manager (`wbi-monitoring/grafana/sentry-token`) |
-| `GF_DATABASE_HOST` | Plain | n/a (SQLite in PoC) | contractor-provided RDS hostname | ECS task def `environment` array |
-| `GF_DATABASE_NAME` | Plain | n/a | contractor-provided DB name | ECS task def `environment` array |
-| `GF_DATABASE_USER` | Plain | n/a | contractor-provided username | ECS task def `environment` array |
+| `GF_DATABASE_HOST` | Plain | n/a (SQLite in PoC) | Infra team-provided RDS hostname | ECS task def `environment` array |
+| `GF_DATABASE_NAME` | Plain | n/a | Infra team-provided DB name | ECS task def `environment` array |
+| `GF_DATABASE_USER` | Plain | n/a | Infra team-provided username | ECS task def `environment` array |
 | `GF_DATABASE_PASSWORD` | Secret | n/a | Secrets Manager → ECS task | Secrets Manager (full connection secret) |
 | `GF_SERVER_ROOT_URL` | Plain | `http://localhost:3000` (Docker Compose) | ALB URL (e.g. `https://grafana.internal`) | ECS task def `environment` array |
 | `GRAFANA_ADMIN_PASSWORD` | Secret | local `.env` file (gitignored) | n/a (Cognito/ALB handles auth in AWS) | local `.env` only |
 | `window.__env.envName` | Runtime | `local` (fallback in `environment.ts`) | sourced from `ENV_NAME` by .NET, served in `window.__env` | .NET serves inline script at page load |
 | `window.__env.sentryDsn` | Runtime | placeholder (fallback in `environment.ts`) | sourced from `SENTRY_DSN` by .NET, served in `window.__env` | .NET serves inline script at page load |
-| `window.__env.otlpEndpoint` | Runtime | `http://localhost:4318` (fallback) | sourced from `ANGULAR_OTLP_ENDPOINT` by .NET, served in `window.__env` | .NET serves inline script at page load |
+| `window.__env.otlpEndpoint` | Runtime | `"/otlp"` (hardcoded relative path) | always `"/otlp"` — not sourced from an env var; .NET proxy hardcodes `http://otel-collector:4318` as the destination | .NET serves inline script at page load |
 
 ECS task definitions use `environment` array for plain values and `secrets` array (Secrets Manager ARN reference) for secrets — no secret values in the repo.
 
@@ -173,11 +199,11 @@ ECS task definitions use `environment` array for plain values and `secrets` arra
 
 ---
 
-### Chunk 4 — AWS infrastructure requirements specification
-**Session:** 4
+### Chunk 4 — AWS infrastructure requirements specification ✅ COMPLETE
+**Session:** 5
 
 **What gets built:**
-A requirements document (`specs-and-plans/aws-infra-spec.md`) written for two audiences: a tech lead who must sign it off, and a contractor who must provision it. It specifies *what* must exist and *why* — not *how* to provision it. The contractor chooses their own method (console, CLI, IaC).
+A requirements document (`specs-and-plans/aws-infra-spec.md`) written for two audiences: a tech lead who must sign it off, and a Infra team who must provision it. It specifies *what* must exist and *why* — not *how* to provision it. The Infra team chooses their own method (console, CLI, IaC).
 
 Sections:
 - **Purpose and scope** — what the platform is, why these resources are needed, which existing resources it sits alongside (VPC, EB environments, RDS cluster)
@@ -185,12 +211,12 @@ Sections:
 - **PoC requirements** — each resource stated as a requirement ("there must be..."), with name, sizing, and justification:
   - ECS cluster `monitoring`
   - 5 ECR private repositories (named)
-  - 5 ECS Fargate services with CPU/memory, port mappings, and environment variable requirements (variable names and sources specified; values TBD by contractor)
+  - 5 ECS Fargate services with CPU/memory, port mappings, and environment variable requirements (variable names and sources specified; values TBD by Infra team)
   - Security group: inbound rules (OTLP 4317/4318 from EB security group; Prometheus scrape port from monitoring security group; Grafana 3000 from ALB security group only), no public ingress
   - ALB with HTTPS listener; Cognito User Pool authorizer federated to Azure AD via OIDC/SAML; target group pointing to Grafana ECS service on port 3000
   - Grafana trusts the ALB/Cognito layer for access control — anyone who passes Cognito auth gets in; no Grafana-level OAuth or role mapping required at this stage (can be hardened later)
   - IAM task execution role: ECR pull + Secrets Manager read on named secret ARNs; Prometheus task role additionally needs `ec2:DescribeInstances` (read-only, region-scoped) for EC2 service discovery
-  - Secrets Manager secrets to pre-create: `wbi-ai/chat/sentry-dsn` (DSN string) and `wbi-monitoring/grafana/sentry-token` (org token) — names and expected keys specified; values are the contractor's responsibility to populate
+  - Secrets Manager secrets to pre-create: `wbi-ai/chat/sentry-dsn` (DSN string) and `wbi-monitoring/grafana/sentry-token` (org token) — names and expected keys specified; values are the Infra team's responsibility to populate
   - ECS Service Connect enabled on the `monitoring` cluster with a private DNS namespace — this gives all platform services stable short hostnames (`prometheus`, `loki`, `otel-collector`, etc.) that match Docker Compose service names, so `otel-collector.yml` and other internal-facing config requires no environment-specific changes. EB environments reach services via the ECS Service Connect DNS names.
 - **Production-grade requirements** — incremental additions, clearly separated from PoC:
   - EFS filesystem with mount targets in each AZ used by EB; access points for Prometheus, Loki, and Grafana
@@ -200,41 +226,41 @@ Sections:
   - Grafana access URL: ALB with Cognito/Azure AD auth (same pattern as existing services) — already decided, no SSM or VPN required
 - **Variable strategy** — reference to the variable table in this plan; specifies which values go in ECS task def `environment` array, which go in `secrets` array referencing Secrets Manager ARNs, and that per-deployment values use `#{TOKEN}#` pipeline substitution
 - **Pipeline agent requirements** — IAM permissions the Azure DevOps agent needs to run the `DeployMonitoring` stage (ECR push, ECS task definition registration, ECS force-deploy); not a pipeline implementation
-- **Outputs required** — what the contractor must hand back before Chunk 5 can proceed:
+- **Outputs required** — what the Infra team must hand back before Chunk 5 can proceed:
   - `LOKI_URI` — internal URI for the Loki service (injected as EB env property on all EB environments)
   - `OTEL_EXPORTER_OTLP_ENDPOINT` — internal URI for the OTel Collector gRPC endpoint (EB env property)
   - OTel Collector HTTP endpoint URI (for `window.__env.otlpEndpoint` served to Angular)
   - EB application name (for EC2 SD `elasticbeanstalk:application-name` tag filter in `prometheus-aws.yml`)
   - Per-service app port (the port the .NET app listens on per EC2 instance — for EC2 SD `port` config)
-  - Confirmation that EC2 instances in each EB environment are tagged with `env=dev`/`env=staging`/`env=production` (EB sets these; contractor must verify)
+  - Confirmation that EC2 instances in each EB environment are tagged with `env=dev`/`env=staging`/`env=production` (EB sets these; Infra team must verify)
   - ECS cluster ARN, ECR repository URIs, security group IDs, Secrets Manager secret ARNs, Grafana ALB URL
 
 **Success criteria:**
 - Tech lead can read the document and approve or reject it without asking for more context
-- Contractor can read the document and know exactly what to build without asking clarifying questions
+- Infra team can read the document and know exactly what to build without asking clarifying questions
 - Every resource has a name, a size/spec, and a one-line justification
 - Security group rules are fully enumerated — no "open as needed"
-- The PoC and production-grade tiers are clearly separated so the contractor can deliver PoC first
+- The PoC and production-grade tiers are clearly separated so the Infra team can deliver PoC first
 
 **Risks / gotchas:**
 - The RDS cluster decision (reuse vs new) must be made before this document is finalised; flag it explicitly if still open at session start
-- Do not include implementation steps, CLI commands, or Terraform — the contractor owns the how; including it conflates requirements with implementation and makes tech lead review harder
+- Do not include implementation steps, CLI commands, or Terraform — the Infra team owns the how; including it conflates requirements with implementation and makes tech lead review harder
 
 ---
 
-### Chunk 4b — Pipeline and deploy config (parallel with contractor)
+### Chunk 4b — Pipeline and deploy config (parallel with Infra team)
 **Session:** None — manual execution; follow `specs-and-plans/runbook-chunk-4b.md`
 
-**Runs in parallel with:** Contractor provisioning AWS resources per the Chunk 4 spec.
+**Runs in parallel with:** Infra team provisioning AWS resources per the Chunk 4 spec.
 
 **What gets built:**
-- `ecs/task-def-*.json` for all five platform services — fully authored with `#{TOKEN}#` placeholders for contractor-provided values; ready to register the moment outputs arrive
+- `ecs/task-def-*.json` for all five platform services — fully authored with `#{TOKEN}#` placeholders for Infra team-provided values; ready to register the moment outputs arrive
 - `DeployMonitoring` stage added to the Azure DevOps pipeline YAML — build, push to ECR, substitute tokens, register task defs, force-deploy
 - `sentry-cli releases upload-sourcemaps` step added to the Angular build stage
-- EB environment property `aws elasticbeanstalk update-environment` commands drafted with placeholders, ready to run once contractor provides values
-- `prometheus-aws.yml` placeholder values identified; ready to complete in 5 minutes once contractor provides EB application name and app port
+- EB environment property `aws elasticbeanstalk update-environment` commands drafted with placeholders, ready to run once Infra team provides values
+- `prometheus-aws.yml` placeholder values identified; ready to complete in 5 minutes once Infra team provides EB application name and app port
 
-**What cannot be completed until contractor hands back outputs:**
+**What cannot be completed until Infra team hands back outputs:**
 - Actual ECR registry URI → needed to complete image tags in task defs and pipeline
 - Secrets Manager ARNs → needed in task def `secrets` arrays
 - `LOKI_URI`, `OTEL_EXPORTER_OTLP_ENDPOINT` → needed in EB env property commands
@@ -245,7 +271,7 @@ Sections:
 - All five task def files exist in `ecs/`; `#{TOKEN}#` placeholders are the only gaps
 - Pipeline YAML compiles (no YAML errors); `DeployMonitoring` stage visible in Azure DevOps
 - Running the EB env property commands with real values is the only manual step remaining before Chunk 5 can start
-- Runbook's "contractor outputs" checklist matches the Chunk 4 required outputs exactly
+- Runbook's "Infra team outputs" checklist matches the Chunk 4 required outputs exactly
 
 **Risks / gotchas:**
 - The Azure DevOps AWS service connection must have permission to push to ECR, register ECS task definitions, and call `ecs:UpdateService` — confirm this before Chunk 5; fixing IAM mid-deployment is disruptive
@@ -253,16 +279,55 @@ Sections:
 
 ---
 
-### Chunk 5 — PoC AWS deployment (contractor executes Chunk 4 spec)
+### Chunk 4c — OTLP proxy: route Angular telemetry through the .NET backend
+**Session:** TBD (can run in parallel with Chunk 4b or immediately after Chunk 2 work is revisited)
+
+**Why this chunk exists:**
+The original design had Angular pushing OTLP directly to the OTel Collector on port 4318. That requires 4318 to be publicly reachable — which means a public ALB or public security group rule, neither of which fits the private VPC model and neither of which works for on-premises customers whose browsers would be pushing telemetry over the internet to a private endpoint. The fix is to route Angular OTLP through the .NET backend, which acts as a thin same-origin proxy. The browser never talks to the collector directly.
+
+**What gets built:**
+- A minimal OTLP proxy endpoint added to the .NET app — a `MapForwardedPath` route or minimal controller that forwards `POST /otlp/v1/metrics` to `http://otel-collector:4318/v1/metrics` (using `HttpClient` with the collector's internal address). The proxy passes the request body and `Content-Type` header verbatim; no transformation needed.
+- `environment.ts` updated: `otlpEndpoint` changes from an absolute collector URI to a relative path (`/otlp`) — always same-origin, no CORS, works identically in every deployment
+- `window.__env.otlpEndpoint` updated: the .NET backend now emits `/otlp` as a hardcoded relative path (not sourced from an env var, since it never changes per deployment)
+- `ANGULAR_OTLP_ENDPOINT` env var **removed** — Angular's endpoint is always the relative path `/otlp` on the app host
+- `otel-collector.yml` CORS config removed — the collector no longer receives browser requests directly; all OTLP HTTP arrives from the .NET backend (server-to-server, same VPC, no CORS)
+- `prometheus.yml` / `prometheus-aws.yml` unaffected — .NET-to-collector gRPC on 4317 is unchanged
+- The proxy endpoint must be **excluded from authentication** (same as `/metrics`) — it is called by the .NET backend itself on behalf of browser requests; the VPC boundary is the security control
+
+**Security group impact:**
+- Port 4318 inbound rule on `sg-monitoring` source changes from EB security group → `sg-monitoring` only (collector only receives from .NET backend, which is on the same task/same cluster internal routing; in the PoC model .NET is on EB so it remains EB SG → monitoring SG, but the browser is no longer a direct source)
+- CORS configuration removed from `otel-collector.yml`
+
+**`aws-infra-spec.md` updates required:**
+- Port 4318 inbound rule justification updated: source is .NET backend on EB (not the browser), no CORS required
+- `ANGULAR_OTLP_ENDPOINT` removed from EB environment property list
+- Architecture diagram updated: Angular → .NET → OTel Collector (not Angular → OTel Collector)
+- Variable strategy table: `ANGULAR_OTLP_ENDPOINT` row removed
+
+**Success criteria:**
+- Angular OTel metrics still arrive in Prometheus (same end-to-end result, different path)
+- Network tab in browser shows OTLP POST to `/otlp/v1/metrics` on the app origin — not to the collector directly
+- `4318` port is not exposed to any public address or internet-facing security group
+- On-prem deployment works with no change: browser posts to app host, app host posts to wherever the collector is internally
+
+**Risks / gotchas:**
+- The proxy adds a small latency hop — negligible for telemetry export (fire-and-forget, non-blocking)
+- The `.NET HttpClient` used for the proxy should be registered via `IHttpClientFactory` to avoid socket exhaustion — do not instantiate `new HttpClient()` in the handler
+- If the .NET app applies a global `RequireAuthorization()` fallback policy, `/otlp` must be explicitly excluded — same principle as `/metrics`
+- The proxy endpoint only needs to handle `/v1/metrics`; traces and logs are not exported by the Angular SDK at this stage (traces deferred to Chunk 6, logs not in scope)
+
+---
+
+### Chunk 5 — PoC AWS deployment (Infra team executes Chunk 4 spec)
 **Session:** 5
 
 **What gets built:**
-- Five ECR repos created by contractor (`prometheus-wbi`, `loki-wbi`, `grafana-wbi`, `blackbox-wbi`, `otel-collector-wbi`)
+- Five ECR repos created by Infra team (`prometheus-wbi`, `loki-wbi`, `grafana-wbi`, `blackbox-wbi`, `otel-collector-wbi`)
 - `ecs/task-def-*.json` files authored for all five services; plain variables in `environment` array, secrets in `secrets` array referencing Secrets Manager ARNs; per-deployment values use `#{TOKEN}#` pipeline substitution
 - `DeployMonitoring` Azure DevOps pipeline stage added (build → ECR push → token substitution in task defs → task def registration → force-deploy)
 - EB environment properties set for all three environments: `LOKI_URI`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `ENV_NAME`, `SENTRY_DSN` (from Secrets Manager)
 - `sentry-cli releases upload-sourcemaps` step added to the Angular build in the pipeline
-- `prometheus-aws.yml` scrape jobs completed with contractor-provided values: EB application name, per-service app port; EC2 `env` tag values confirmed as `dev`/`staging`/`production` on each EB environment (contractor must set these tags — they propagate to all EC2 instances in that environment automatically)
+- `prometheus-aws.yml` scrape jobs completed with Infra team-provided values: EB application name, per-service app port; EC2 `env` tag values confirmed as `dev`/`staging`/`production` on each EB environment (Infra team must set these tags — they propagate to all EC2 instances in that environment automatically)
 
 **Success criteria:**
 - Grafana accessible via ALB URL authenticated through Cognito/Azure AD; loads without error
@@ -299,9 +364,9 @@ Sections:
 **Session:** 6
 
 **What gets built:**
-- EFS provisioned by contractor; attached to Prometheus (TSDB), Loki (index), and Grafana tasks — task definitions updated with EFS mount config
-- S3 bucket `wbi-loki-chunks` provisioned by contractor; `loki.yml` updated to S3 backend; 31-day lifecycle rule
-- RDS database provisioned by contractor; full connection details stored in a single Secrets Manager secret; Grafana ECS task updated to read `GF_DATABASE_HOST`, `GF_DATABASE_NAME`, `GF_DATABASE_USER` from `environment` array and `GF_DATABASE_PASSWORD` from `secrets` array; Grafana state migrated from SQLite
+- EFS provisioned by Infra team; attached to Prometheus (TSDB), Loki (index), and Grafana tasks — task definitions updated with EFS mount config
+- S3 bucket `wbi-loki-chunks` provisioned by Infra team; `loki.yml` updated to S3 backend; 31-day lifecycle rule
+- RDS database provisioned by Infra team; full connection details stored in a single Secrets Manager secret; Grafana ECS task updated to read `GF_DATABASE_HOST`, `GF_DATABASE_NAME`, `GF_DATABASE_USER` from `environment` array and `GF_DATABASE_PASSWORD` from `secrets` array; Grafana state migrated from SQLite
 - Pipeline updated to EFS-sync config deployment model (one-off ECS task syncs `monitoring/` from repo)
 - Grafana Tempo deployed (new ECR repo `tempo-wbi`, task def with EFS mount)
 - `otel-collector.yml` updated with traces pipeline (`otlp/tempo` exporter)
@@ -322,7 +387,7 @@ Sections:
 - Tempo and the OTel Collector are separate containers on different ECS Service Connect hostnames (`tempo` vs `otel-collector`) — there is no port clash; the collector exports to `http://tempo:4317` and Tempo listens on its own port 4317
 - **OTel Collector sizing**: upgrade the Collector task definition from 0.25 vCPU / 512 MB to **0.5 vCPU / 1 GB** at this chunk.
 - **Prometheus exemplars**: enable in `prometheus-aws.yml` global section (`storage.tsdb.exemplar_storage.enable_exemplars: true`, `max_exemplars: 100000`). Allows Grafana to display request-level trace links as diamond markers on time-series panels. Requires a new Prometheus image build.
-- **EFS I/O mode**: Prometheus TSDB compaction performs many small random reads — EFS general-purpose mode will hit its IOPS ceiling every few hours, stalling Prometheus for 30–60 seconds. Specify **EFS Max I/O** for the Prometheus mount point when the contractor provisions EFS. Flag this in `specs-and-plans/aws-infra-spec.md` before Chunk 6 starts.
+- **EFS I/O mode**: Prometheus TSDB compaction performs many small random reads — EFS general-purpose mode will hit its IOPS ceiling every few hours, stalling Prometheus for 30–60 seconds. Specify **EFS Max I/O** for the Prometheus mount point when the Infra team provisions EFS. Flag this in `specs-and-plans/aws-infra-spec.md` before Chunk 6 starts.
 - **Loki S3 IAM**: before switching Loki to S3 backend, confirm the Loki ECS task role has `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:ListBucket` on `wbi-loki-chunks`. Missing permissions cause silent write failures — logs appear to ingest but are unqueryable after the retention window. By Chunk 6 there are at least two OTLP sources (.NET + Angular across multiple environments); 0.25 vCPU will CPU-throttle and cause `memory_limiter` to start refusing ingestion. Adds ~$4–5/month to the platform cost (~$86/month total). Update the `task-def-otel-collector.json` `cpu` and `memory` fields.
 
 ---
@@ -377,10 +442,10 @@ Chunk 1 (Backend) → Chunk 2 (Frontend) → Chunk 3 (Local stack)
                                                   ↓
                           ┌───────────────────────┴───────────────────────┐
                           │                                               │
-                   [contractor executes AWS infra]               Chunk 4b (Pipeline & deploy config)
+                   [Infra team executes AWS infra]               Chunk 4b (Pipeline & deploy config)
                           │                                               │
                           └───────────────────────┬───────────────────────┘
-                                                  ↓ (contractor outputs in hand)
+                                                  ↓ (Infra team outputs in hand)
                                           Chunk 5 (PoC AWS)
                                                   ↓
                                           Chunk 6 (Prod-grade)
@@ -390,9 +455,9 @@ Chunk 1 (Backend) → Chunk 2 (Frontend) → Chunk 3 (Local stack)
 
 - **Chunks 1 and 2 before 3**: The service must emit metrics/logs before the platform has anything to collect. Chunks 1–2 can proceed in parallel if two sessions run simultaneously.
 - **Chunk 3 before 4**: Local stack must be working so all concrete details (ports, image names, service names) are known before writing the handoff spec. The spec is only as good as the local stack it describes.
-- **Chunk 4 before contractor**: The handoff document is the contractor's input. Nothing AWS-side starts until it is complete.
-- **Chunk 4b parallel with contractor**: Once Chunk 4 is approved and the contractor starts, Chunk 4b can run immediately. It authors all pipeline YAML and task definition files with `#{TOKEN}#` placeholders. Contractor outputs drop straight into the placeholders — Chunk 5 starts the moment both sides are done.
-- **Contractor before Chunk 5**: Chunk 5 requires the AWS resources to exist and the contractor outputs (URIs, ARNs, security group IDs) to be in hand.
+- **Chunk 4 before Infra team**: The handoff document is the Infra team's input. Nothing AWS-side starts until it is complete.
+- **Chunk 4b parallel with Infra team**: Once Chunk 4 is approved and the Infra team starts, Chunk 4b can run immediately. It authors all pipeline YAML and task definition files with `#{TOKEN}#` placeholders. Infra team outputs drop straight into the placeholders — Chunk 5 starts the moment both sides are done.
+- **Infra team before Chunk 5**: Chunk 5 requires the AWS resources to exist and the Infra team outputs (URIs, ARNs, security group IDs) to be in hand.
 - **Chunk 6 before 7**: Can only validate the pattern after the full production-grade stack is running.
 - **Chunk 7 last**: Retrospective and template refinement requires the full end-to-end to have been exercised.
 
@@ -406,17 +471,17 @@ Chunk 1 (Backend) → Chunk 2 (Frontend) → Chunk 3 (Local stack)
 4. An existing RDS cluster is available for Chunk 6 (Grafana database), or a new one will be created — TBD before Chunk 4.
 5. The Azure DevOps pipeline already builds and deploys the AI Chat Middleware; Chunk 5 adds a `DeployMonitoring` stage to it.
 6. Sentry free tier is sufficient for the PoC period.
-7. The contractor can enable ECS Service Connect on the `monitoring` cluster — this gives all platform services stable internal DNS names (`prometheus`, `loki`, `otel-collector`) that match Docker Compose service names and are reachable from EB environments in the same VPC.
+7. The Infra team can enable ECS Service Connect on the `monitoring` cluster — this gives all platform services stable internal DNS names (`prometheus`, `loki`, `otel-collector`) that match Docker Compose service names and are reachable from EB environments in the same VPC.
 8. The Grafana `grafana-sentry-datasource` plugin can be installed via `grafana-cli` at image build time.
 
 ---
 
 ## Open Questions
 
-1. ~~**Internal hostname for Loki**~~ — **Resolved**: the contractor decides the DNS mechanism and hands back `LOKI_URI` and `OTEL_EXPORTER_OTLP_ENDPOINT` as required outputs from Chunk 4. These are injected as EB environment properties; no hostname is hardcoded in committed config.
-2. ~~**EB internal hostnames/ports**~~ — **Resolved**: EC2 service discovery is the official scrape strategy. Prometheus discovers instances dynamically via `ec2_sd_configs` filtered by the EB application name tag and maps the `env` EC2 tag to a Prometheus label. No per-instance hostnames are needed. Contractor must provide EB application name, per-service app port, and confirmation that `env` tags are set on each EB environment.
+1. ~~**Internal hostname for Loki**~~ — **Resolved**: the Infra team decides the DNS mechanism and hands back `LOKI_URI` and `OTEL_EXPORTER_OTLP_ENDPOINT` as required outputs from Chunk 4. These are injected as EB environment properties; no hostname is hardcoded in committed config.
+2. ~~**EB internal hostnames/ports**~~ — **Resolved**: EC2 service discovery is the official scrape strategy. Prometheus discovers instances dynamically via `ec2_sd_configs` filtered by the EB application name tag and maps the `env` EC2 tag to a Prometheus label. No per-instance hostnames are needed. Infra team must provide EB application name, per-service app port, and confirmation that `env` tags are set on each EB environment.
 3. ~~**OTel Collector CORS**~~ — **Resolved**: Angular is served as static files by Kestrel via nginx; port 4318 is always a different origin. CORS headers on the OTel Collector HTTP receiver are unconditionally required in all environments. See Chunk 3 gotcha.
 4. ~~**Grafana Sentry plugin**~~ — **Resolved**: use `grafana-sentry-datasource` (official Grafana Labs plugin). Installed via `grafana-cli plugins install grafana-sentry-datasource` baked into the Grafana Dockerfile. Auth via `SENTRY_ORG_TOKEN` env var; value in Secrets Manager (`wbi-monitoring/grafana/sentry-token`).
-5. ~~**RDS cluster**~~ — **Resolved**: contractor's decision — the spec will state the requirement (a PostgreSQL database for Grafana state) and leave the choice of new vs existing cluster to the contractor.
+5. ~~**RDS cluster**~~ — **Resolved**: Infra team's decision — the spec will state the requirement (a PostgreSQL database for Grafana state) and leave the choice of new vs existing cluster to the Infra team.
 6. ~~**SSM access**~~ — **Resolved**: SSM is not in use. Grafana is accessed via an ALB with a Cognito User Pool authorizer federated to Azure AD — same pattern as existing services. Required from PoC; no phased upgrade needed.
 7. ~~**Angular build env injection**~~ — **Resolved**: `window.__env` served by the .NET backend. The .NET app emits `window.__env = { envName, sentryDsn, otlpEndpoint }` from its own environment variables at page load. Angular reads with local dev fallbacks. No per-environment Angular build required. Services that already have `fileReplacements` in `angular.json` may use those instead — the onboarding prompt will check.

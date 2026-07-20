@@ -129,12 +129,12 @@ A Sentry org token was generated with `org:ci` scope (the only available scope).
 
 **What to build:** Chunk 4 — `specs-and-plans/aws-infra-spec.md`
 
-This is a requirements document for tech lead sign-off and contractor execution. No code — pure specification writing.
+This is a requirements document for tech lead sign-off and Infra team execution. No code — pure specification writing.
 
 **All open questions resolved:**
-- RDS cluster: contractor's decision (new vs existing) — the spec states the requirement and leaves the choice open
-- EB application name, app port, env tag names: included as required contractor outputs in the spec
+- RDS cluster: Infra team's decision (new vs existing) — the spec states the requirement and leaves the choice open
+- EB application name, app port, env tag names: included as required Infra team outputs in the spec
 
 **Note for Chunk 5 pre-flight:**
-- `prometheus-aws.yml` has `#{AI_CHAT_APP_PORT}#`, `#{EB_APPLICATION_NAME}#`, and per-environment host placeholders — these will be filled once contractor provides the values
+- `prometheus-aws.yml` has `#{AI_CHAT_APP_PORT}#`, `#{EB_APPLICATION_NAME}#`, and per-environment host placeholders — these will be filled once Infra team provides the values
 - The local port 18888 for OTel Collector internal metrics is a local-only deviation; ECS will use port 8888 as specified in `prometheus-aws.yml`

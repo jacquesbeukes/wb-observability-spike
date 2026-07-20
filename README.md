@@ -33,7 +33,6 @@ networks:
 environment:
   LOKI_URI: http://loki:3100
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
-  ANGULAR_OTLP_ENDPOINT: http://otel-collector:4318
   ENV_NAME: local
   SENTRY_DSN: <dsn>
 
@@ -102,7 +101,6 @@ Deployment target: ECS Fargate cluster `monitoring`, `ap-southeast-2`. Pipeline:
 | `ENV_NAME` | `local` | EB env property |
 | `LOKI_URI` | `http://loki:3100` | EB env property |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://otel-collector:4317` | EB env property |
-| `ANGULAR_OTLP_ENDPOINT` | `http://otel-collector:4318` | EB env property |
 | `SENTRY_DSN` | hardcoded fallback in `environment.ts` | Secrets Manager → EB env property |
 | `SENTRY_ORG_TOKEN` | `.env` | Secrets Manager → ECS task |
 | `GRAFANA_ADMIN_PASSWORD` | `.env` | n/a (Cognito handles AWS auth) |

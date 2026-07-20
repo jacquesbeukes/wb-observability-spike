@@ -1,19 +1,19 @@
 # Chunk 4b Runbook — Pipeline & Deploy Config
-## Manual execution guide · Run in parallel with contractor AWS provisioning
+## Manual execution guide · Run in parallel with Infra team AWS provisioning
 
 ---
 
 ## Overview
 
-This runbook authors everything needed to build and deploy the monitoring platform to AWS, using `#{TOKEN}#` placeholders for values the contractor has not yet handed back. When the contractor's outputs arrive you fill in the placeholders (Phase 2) and Chunk 5 can start immediately.
+This runbook authors everything needed to build and deploy the monitoring platform to AWS, using `#{TOKEN}#` placeholders for values the Infra team has not yet handed back. When the Infra team's outputs arrive you fill in the placeholders (Phase 2) and Chunk 5 can start immediately.
 
-**Pre-condition:** Chunk 4 (`specs-and-plans/aws-infra-spec.md`) is approved and the contractor has started.  
+**Pre-condition:** Chunk 4 (`specs-and-plans/aws-infra-spec.md`) is approved and the Infra team has started.  
 **Blocks:** Chunk 5.  
-**Est. time:** Phase 1 ~2–3 hours · Phase 2 ~30 minutes (once contractor outputs arrive).
+**Est. time:** Phase 1 ~2–3 hours · Phase 2 ~30 minutes (once Infra team outputs arrive).
 
 ---
 
-## Contractor outputs tracker
+## Infra team outputs tracker
 
 Fill this in as values arrive. Every `#{TOKEN}#` in the files below maps to a row here.
 
@@ -30,19 +30,18 @@ Fill this in as values arrive. Every `#{TOKEN}#` in the files below maps to a ro
 | Monitoring security group ID | `#{MONITORING_SG_ID}#` | | ☐ |
 | Loki internal URI | `#{LOKI_URI}#` | e.g. `http://loki:3100` (ECS Service Connect) | ☐ |
 | OTel Collector gRPC internal URI | `#{OTEL_GRPC_URI}#` | e.g. `http://otel-collector:4317` | ☐ |
-| OTel Collector HTTP endpoint (for Angular) | `#{OTEL_HTTP_URI}#` | e.g. `https://otel.<internal-domain>:4318` | ☐ |
 | Grafana ALB URL | `#{GRAFANA_ALB_URL}#` | e.g. `https://grafana.internal.wbi.com` | ☐ |
 | Sentry org token Secrets Manager ARN | `#{SENTRY_ORG_TOKEN_ARN}#` | `arn:aws:secretsmanager:ap-southeast-2:...:secret:wbi-monitoring/grafana/sentry-token-...` | ☐ |
 | Sentry DSN Secrets Manager ARN | `#{SENTRY_DSN_ARN}#` | `arn:aws:secretsmanager:ap-southeast-2:...:secret:wbi-ai/chat/sentry-dsn-...` | ☐ |
 | EB application name | `#{EB_APP_NAME}#` | | ☐ |
 | AI Chat Middleware app port (per EC2 instance) | `#{APP_PORT}#` | | ☐ |
-| EC2 `env` tag confirmation | — | Contractor confirms `env=dev/staging/production` set on each EB environment | ☐ |
+| EC2 `env` tag confirmation | — | Infra team confirms `env=dev/staging/production` set on each EB environment | ☐ |
 
 ---
 
 ## Phase 1 — Author files with placeholders
 
-Complete this phase while the contractor is working. No AWS access needed.
+Complete this phase while the Infra team is working. No AWS access needed.
 
 ---
 
@@ -373,10 +372,10 @@ Find the existing Angular build step in the pipeline and add a `sentry-cli` uplo
 
 ### Step 5 — Draft EB environment property commands
 
-These commands are ready to run the moment contractor outputs arrive. Fill in placeholders from the tracker table above.
+These commands are ready to run the moment Infra team outputs arrive. Fill in placeholders from the tracker table above.
 
 ```bash
-# Run once per EB environment. Substitute values from the contractor outputs tracker.
+# Run once per EB environment. Substitute values from the Infra team outputs tracker.
 
 # dev
 aws elasticbeanstalk update-environment \
@@ -386,7 +385,6 @@ aws elasticbeanstalk update-environment \
     Namespace=aws:elasticbeanstalk:application:environment,OptionName=ENV_NAME,Value=dev \
     Namespace=aws:elasticbeanstalk:application:environment,OptionName=LOKI_URI,Value=#{LOKI_URI}# \
     Namespace=aws:elasticbeanstalk:application:environment,OptionName=OTEL_EXPORTER_OTLP_ENDPOINT,Value=#{OTEL_GRPC_URI}# \
-    Namespace=aws:elasticbeanstalk:application:environment,OptionName=OTEL_EXPORTER_OTLP_ENDPOINT_HTTP,Value=#{OTEL_HTTP_URI}# \
     Namespace=aws:elasticbeanstalk:application:environment,OptionName=SENTRY_DSN,Value=<from-secrets-manager-or-paste-directly>
 
 # staging
@@ -397,7 +395,6 @@ aws elasticbeanstalk update-environment \
     Namespace=aws:elasticbeanstalk:application:environment,OptionName=ENV_NAME,Value=staging \
     Namespace=aws:elasticbeanstalk:application:environment,OptionName=LOKI_URI,Value=#{LOKI_URI}# \
     Namespace=aws:elasticbeanstalk:application:environment,OptionName=OTEL_EXPORTER_OTLP_ENDPOINT,Value=#{OTEL_GRPC_URI}# \
-    Namespace=aws:elasticbeanstalk:application:environment,OptionName=OTEL_EXPORTER_OTLP_ENDPOINT_HTTP,Value=#{OTEL_HTTP_URI}# \
     Namespace=aws:elasticbeanstalk:application:environment,OptionName=SENTRY_DSN,Value=<from-secrets-manager-or-paste-directly>
 
 # production
@@ -408,11 +405,10 @@ aws elasticbeanstalk update-environment \
     Namespace=aws:elasticbeanstalk:application:environment,OptionName=ENV_NAME,Value=production \
     Namespace=aws:elasticbeanstalk:application:environment,OptionName=LOKI_URI,Value=#{LOKI_URI}# \
     Namespace=aws:elasticbeanstalk:application:environment,OptionName=OTEL_EXPORTER_OTLP_ENDPOINT,Value=#{OTEL_GRPC_URI}# \
-    Namespace=aws:elasticbeanstalk:application:environment,OptionName=OTEL_EXPORTER_OTLP_ENDPOINT_HTTP,Value=#{OTEL_HTTP_URI}# \
     Namespace=aws:elasticbeanstalk:application:environment,OptionName=SENTRY_DSN,Value=<from-secrets-manager-or-paste-directly>
 ```
 
-> `SENTRY_DSN` can be set as a plain EB environment property pointing at the Secrets Manager ARN if the EB instance role has `secretsmanager:GetSecretValue`, or pasted directly if you prefer to manage it outside Secrets Manager. The contractor's output for `#{SENTRY_DSN_ARN}#` covers the Secrets Manager path.
+> `SENTRY_DSN` can be set as a plain EB environment property pointing at the Secrets Manager ARN if the EB instance role has `secretsmanager:GetSecretValue`, or pasted directly if you prefer to manage it outside Secrets Manager. The Infra team's output for `#{SENTRY_DSN_ARN}#` covers the Secrets Manager path.
 
 > Run `dev` first. Wait for the environment to update (`aws elasticbeanstalk describe-environments --environment-names <dev-env-name>` shows `Status: Ready`). Confirm data appears in Grafana before running `staging`, then `production`. Leave a 15-minute gap between each.
 
@@ -420,20 +416,20 @@ aws elasticbeanstalk update-environment \
 
 ### Step 6 — Prepare `prometheus-aws.yml` for completion
 
-Open `monitoring/prometheus/prometheus-aws.yml`. Two values need filling in once contractor outputs arrive:
+Open `monitoring/prometheus/prometheus-aws.yml`. Two values need filling in once Infra team outputs arrive:
 
 | Placeholder | Token | Source |
 |---|---|---|
-| EB application name | `#{EB_APP_NAME}#` | Contractor output |
-| Per-service app port | `#{APP_PORT}#` | Contractor output |
+| EB application name | `#{EB_APP_NAME}#` | Infra team output |
+| Per-service app port | `#{APP_PORT}#` | Infra team output |
 
-These are the only remaining gaps in that file after Chunk 3 creates it. No other config in `prometheus-aws.yml` depends on contractor outputs — all other values (region, tag names, relabel rules) are known now.
+These are the only remaining gaps in that file after Chunk 3 creates it. No other config in `prometheus-aws.yml` depends on Infra team outputs — all other values (region, tag names, relabel rules) are known now.
 
 ---
 
-## Phase 2 — Fill in placeholders (run when contractor outputs arrive)
+## Phase 2 — Fill in placeholders (run when Infra team outputs arrive)
 
-Work through the contractor outputs tracker table at the top of this runbook. For each received value:
+Work through the Infra team outputs tracker table at the top of this runbook. For each received value:
 
 1. **Task definitions** (`ecs/task-def-*.json`) — do a global search-and-replace for each `#{TOKEN}#`. After replacing all tokens, verify no `#{` remains in any file: `grep -r '#{' ecs/`
 
@@ -454,9 +450,9 @@ Once Phase 2 is complete, open Chunk 5 and start the pre-deployment gate.
 - [ ] All `#{TOKEN}#` placeholders resolved — `grep -r '#{' ecs/` returns nothing
 - [ ] `prometheus-aws.yml` has real EB application name and app port
 - [ ] Pipeline YAML has real service connection name and `dependsOn` value
-- [ ] CloudWatch log groups exist for all five services: `/ecs/monitoring/prometheus`, `/ecs/monitoring/loki`, `/ecs/monitoring/grafana`, `/ecs/monitoring/blackbox`, `/ecs/monitoring/otel-collector` — create manually if the contractor has not done so
+- [ ] CloudWatch log groups exist for all five services: `/ecs/monitoring/prometheus`, `/ecs/monitoring/loki`, `/ecs/monitoring/grafana`, `/ecs/monitoring/blackbox`, `/ecs/monitoring/otel-collector` — create manually if the Infra team has not done so
 - [ ] `SENTRY_AUTH_TOKEN` set as a secret pipeline variable in Azure DevOps
 - [ ] EB environment names confirmed for dev, staging, production
-- [ ] EC2 `env` tags confirmed on each EB environment (contractor output)
+- [ ] EC2 `env` tags confirmed on each EB environment (Infra team output)
 - [ ] Pipeline runs at least one dry run — `DeployMonitoring` stage visible and YAML-valid in Azure DevOps
-- [ ] Contractor outputs tracker table fully ticked off
+- [ ] Infra team outputs tracker table fully ticked off

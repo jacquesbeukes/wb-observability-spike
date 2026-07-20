@@ -35,7 +35,7 @@ The application being monitored lives in a separate repo (`C:\dev\ai-chat-spike\
 
 ## Active work
 
-Multi-session implementation in progress. Current state: **Chunk 3 complete**.
+Multi-session implementation in progress. Current state: **Chunk 4 complete**.
 
 - Full plan: `specs-and-plans/implementation-plan.md`
 - Architecture spec: `specs-and-plans/spec.md`
@@ -54,7 +54,7 @@ Always read the latest session summary and `implementation-plan.md` before start
 
 All environment-specific values are injected — nothing hardcoded in committed config except local Docker Compose defaults. See `implementation-plan.md` for the full variable table.
 
-Critical: `ANGULAR_OTLP_ENDPOINT` (HTTP/4318) is separate from `OTEL_EXPORTER_OTLP_ENDPOINT` (gRPC/4317) — browsers cannot make gRPC calls.
+Critical: Angular browser metrics are **never** sent directly to the OTel Collector. The Angular OTel SDK posts to `/otlp/v1/metrics` on the .NET app (same-origin). The .NET app proxies to `http://otel-collector:4318` internally. This keeps the collector off the public internet and works for on-premises deployments. `ANGULAR_OTLP_ENDPOINT` env var is removed — `otlpEndpoint` is always the hardcoded relative path `"/otlp"`. The proxy hardcodes `http://otel-collector:4318` as the destination — this hostname is stable in both Docker Compose and ECS Service Connect, so no env var is needed.
 
 ## Docker network
 
@@ -71,15 +71,16 @@ ECS Fargate cluster `monitoring`, `ap-southeast-2`. Five services: Prometheus, L
 - **Grafana alert provisioning**: every alert rule query must include `relativeTimeRange: { from: N, to: 0 }` or Grafana refuses to start.
 - **Sentry datasource alerting**: `grafana-sentry-datasource` cannot be used as a Grafana Unified Alerting data source. Sentry JS error alerts require a separate integration (Sentry webhook → Grafana OnCall, or polling via custom metric).
 
-## Chunk 4 starting point
+## Chunk 4b / 5 starting point
 
-Next session writes `specs-and-plans/aws-infra-spec.md`. Before starting:
-- RDS cluster decision is the contractor's call — the spec states the requirement and leaves new vs existing open
-- Confirm EB application name, .NET app port, and EB environment names (dev/staging/production)
+`specs-and-plans/aws-infra-spec.md` is written and ready for tech lead review. Before Chunk 4b:
+- Open questions in the spec (EB application name, app port, Cognito User Pool reuse, VPC ID) must be resolved — see the Open Questions table in `aws-infra-spec.md`
+- Once questions are resolved and spec is approved, Chunk 4b can run immediately in parallel with Infra team provisioning
+- Chunk 4b authors `ecs/task-def-*.json` files and the `DeployMonitoring` Azure DevOps stage with `#{TOKEN}#` placeholders
 
 ## File naming conventions
 
 - Prometheus config: `prometheus.yml` (local), `prometheus-aws.yml` (AWS) — do NOT mix them up; `Dockerfile.prometheus` copies `prometheus-aws.yml`
 - Grafana datasource provisioning: `.yaml` extension (Grafana convention)
 - Grafana dashboard exports: use "Export for sharing externally" to strip datasource UIDs
-- ECS task defs: `task-def-<service>.json` with `#{TOKEN}#` placeholders for contractor-provided values
+- ECS task defs: `task-def-<service>.json` with `#{TOKEN}#` placeholders for Infra team-provided values

@@ -20,12 +20,36 @@ The Workbench AI Chat Middleware is the first service onboarded and serves as th
 
 ## Platform Architecture
 
-```
-[Service A: .NET + Angular]  →  OTel Collector  →  Prometheus  →  Grafana
-[Service B: .NET + Vue.js ]  →  OTel Collector  →  Loki        →  Grafana
-[Service N: ...]             →  OTel Collector  →  Tempo        →  Grafana (traces, production-grade)
-                             Sentry (per service, cloud)        →  Grafana (JS error count panel)
-Blackbox Exporter  →  Prometheus  →  Grafana (endpoint uptime)
+```mermaid
+graph LR
+    subgraph Services["Services"]
+        A[".NET + Angular / Service A"]
+        B[".NET + Vue.js / Service B"]
+        N["...Service N"]
+    end
+
+    Collector["OTel Collector"]
+    Prometheus["Prometheus"]
+    Loki["Loki"]
+    Tempo["Tempo\n(production-grade)"]
+    Grafana["Grafana\nsingle pane of glass"]
+    Blackbox["Blackbox Exporter"]
+    Sentry["Sentry (SaaS)\nper-service"]
+
+    A -->|"OTLP + Serilog"| Collector
+    B -->|"OTLP + Serilog"| Collector
+    N -->|"OTLP + Serilog"| Collector
+
+    Collector --> Prometheus
+    Collector --> Loki
+    Collector -->|traces| Tempo
+
+    Blackbox --> Prometheus
+    Sentry --> Grafana
+
+    Prometheus --> Grafana
+    Loki --> Grafana
+    Tempo --> Grafana
 ```
 
 Grafana is the single pane of glass. Each service gets its own dashboard and alert rules; the platform shares one Prometheus, one Loki, and one OTel Collector.
@@ -127,10 +151,10 @@ EC2 SD config block for `prometheus-aws.yml` — one job per service:
 
   ec2_sd_configs:
     - region: ap-southeast-2
-      port: <app-port>         # port the .NET app listens on per EC2 instance (contractor-provided)
+      port: <app-port>         # port the .NET app listens on per EC2 instance (Infra team-provided)
       filters:
         - name: tag:elasticbeanstalk:application-name
-          values: [<eb-application-name>]   # contractor-provided EB application name
+          values: [<eb-application-name>]   # Infra team-provided EB application name
 
   relabel_configs:
     # Drop instances that are not in the running state
@@ -138,7 +162,7 @@ EC2 SD config block for `prometheus-aws.yml` — one job per service:
       regex: running
       action: keep
     # Propagate the `env` EC2 tag as a Prometheus label.
-    # The contractor sets env=dev/staging/production on each EB environment;
+    # The Infra team sets env=dev/staging/production on each EB environment;
     # EB environment tags propagate to all EC2 instances in that environment automatically.
     - source_labels: [__meta_ec2_tag_env]
       target_label: env
@@ -219,7 +243,7 @@ The Grafana alert rules remain in Grafana Unified Alerting (`grafana/provisionin
 
 Receives OTLP from all services on ports 4317 (gRPC) and 4318 (HTTP). Single Collector fans out to Prometheus and Loki. Traces pipeline added in the production-grade delivery.
 
-The `http` receiver must include CORS configuration — Angular apps are served from a different origin than the collector, so all browser OTLP export is cross-origin.
+The .NET backend proxies Angular browser metrics to port 4318 server-to-server — the browser never reaches the collector directly. This means no CORS configuration is required on the collector's `http` receiver. The collector only receives from server-side processes (the .NET app and other internal services), all within the VPC.
 
 Initial config (metrics + logs, no traces):
 ```yaml
@@ -228,10 +252,6 @@ receivers:
     protocols:
       grpc:
       http:
-        cors:
-          allowed_origins:
-            - "http://localhost:*"        # local dev
-            - "https://*.your-domain.com" # EB environments — replace with actual domain
 
 processors:
   memory_limiter:
@@ -470,7 +490,7 @@ All resources in the same VPC as the Elastic Beanstalk environments. One ECS clu
 | OTel Collector | ECS Fargate task | 0.25 vCPU / 512 MB |
 | ECR | 5 private repos | `prometheus-wbi`, `loki-wbi`, `grafana-wbi`, `blackbox-wbi`, `otel-collector-wbi` |
 | ALB | Application Load Balancer | HTTPS listener; Cognito User Pool authorizer federated to Azure AD; target group → Grafana port 3000 |
-| Security group | VPC | Internal only; OTLP 4317/4318 open to EB security group; Prometheus scrapes EB on service port; Grafana 3000 open to ALB security group only |
+| Security group | VPC | Internal only; OTLP 4317 (gRPC) and 4318 (HTTP) open to EB security group (4318 receives from .NET proxy, not browser); Prometheus scrapes EB on service port; Grafana 3000 open to ALB security group only |
 
 Storage is ephemeral at this tier — task restart loses data. Accepted for PoC.
 
@@ -698,7 +718,7 @@ Add service-specific custom metrics (gauges, counters, histograms) as appropriat
 
 `propertiesAsLabels: []` is required. Without it, the sink promotes every Serilog enriched property (`TenantId`, `CorrelationId`, `RequestId`, etc.) to a Loki stream label, creating thousands of streams per tenant and exhausting `max_streams_per_user`. All per-request properties must live in the structured log body, queryable via `| json` in LogQL — never in the stream index.
 
-`LOKI_URI` and `ENV_NAME` are injected as EB environment properties at deploy time. `LOKI_URI` is provided by the contractor (the ECS Service Connect DNS name for Loki, e.g. `http://loki:3100`). `ENV_NAME` is `dev`, `staging`, or `production` per environment. Each EB environment's logs are separated in Loki by the `env` label and queryable independently.
+`LOKI_URI` and `ENV_NAME` are injected as EB environment properties at deploy time. `LOKI_URI` is provided by the Infra team (the ECS Service Connect DNS name for Loki, e.g. `http://loki:3100`). `ENV_NAME` is `dev`, `staging`, or `production` per environment. Each EB environment's logs are separated in Loki by the `env` label and queryable independently.
 
 #### OpenTelemetry SDK
 
@@ -734,7 +754,7 @@ Log.Logger = new LoggerConfiguration()
 
 This must be added in Chunk 1, before tracing is enabled. The `TraceId` and `SpanId` fields will be empty strings until Chunk 6 enables `WithTracing(...)` — that is expected and harmless. When Tempo is deployed, Grafana's Derived Fields on the Loki datasource will auto-link any log line to its trace in one click. If this enricher is not present from day one, the Loki→Tempo correlation link can never be backfilled for historical logs.
 
-`OTEL_EXPORTER_OTLP_ENDPOINT` is injected as an EB environment property at deploy time (value provided by contractor). Defaults to the Docker Compose service name for local development. Initially metrics only; tracing enabled once Tempo is deployed.
+`OTEL_EXPORTER_OTLP_ENDPOINT` is injected as an EB environment property at deploy time (value provided by Infra team). Defaults to the Docker Compose service name for local development. Initially metrics only; tracing enabled once Tempo is deployed.
 
 ### 2.2 Frontend (Angular / Vue.js)
 
@@ -748,17 +768,19 @@ Example (Razor tag helper or middleware in the .NET app):
   window.__env = {
     envName: "@System.Environment.GetEnvironmentVariable("ENV_NAME") ?? "local"",
     sentryDsn: "@System.Environment.GetEnvironmentVariable("SENTRY_DSN") ?? """,
-    otlpEndpoint: "@System.Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT") ?? "http://localhost:4318""
+    otlpEndpoint: "/otlp"
   };
 </script>
 ```
+
+`otlpEndpoint` is always `/otlp` — a relative path on the app host. The .NET backend exposes a proxy endpoint at `/otlp` that forwards requests to the OTel Collector internally. This means Angular telemetry is same-origin in every environment and the collector is never directly reachable from the browser.
 
 `environment.ts` reads from `window.__env` with local dev fallbacks:
 ```typescript
 export const environment = {
   envName: (window as any).__env?.envName ?? 'local',
   sentryDsn: (window as any).__env?.sentryDsn ?? '',
-  otlpEndpoint: (window as any).__env?.otlpEndpoint ?? 'http://localhost:4318',
+  otlpEndpoint: (window as any).__env?.otlpEndpoint ?? '/otlp',
 };
 ```
 
@@ -791,10 +813,10 @@ Each service gets its own Sentry project. The `environment` field maps to the EB
 **Packages:** `@opentelemetry/sdk-web`, `@opentelemetry/auto-instrumentations-web`
 
 ```typescript
-const exporter = new OTLPMetricExporter({ url: environment.otlpEndpoint });
+const exporter = new OTLPMetricExporter({ url: environment.otlpEndpoint + '/v1/metrics' });
 ```
 
-Exports metrics to the OTel Collector via OTLP HTTP. The endpoint is read from `window.__env.otlpEndpoint` (set from `OTEL_EXPORTER_OTLP_ENDPOINT` on the .NET side). The `deployment.environment` resource attribute is set from `environment.envName`. Initially metrics only; tracing enabled once Tempo is deployed. Sentry runs alongside — OTel does not replace it.
+Exports metrics via OTLP HTTP to the `/otlp` proxy endpoint on the .NET app (same-origin). The .NET backend forwards the request to the OTel Collector at `http://otel-collector:4318` internally. The browser never communicates with the collector directly — this keeps the collector off the public internet and works identically for cloud and on-premises deployments. The `deployment.environment` resource attribute is set from `environment.envName`. Initially metrics only; tracing enabled once Tempo is deployed. Sentry runs alongside — OTel does not replace it.
 
 #### CorrelationId Interceptor
 
@@ -923,16 +945,16 @@ Acceptance: full local observability loop — metrics from .NET and Angular visi
 
 ### Step 3 — AWS infrastructure requirements specification
 
-Produce `specs-and-plans/aws-infra-spec.md` specifying what must be provisioned and why, for tech lead sign-off and contractor execution. The document covers PoC and production-grade tiers, all resource names and sizes, security group rules, IAM requirements, ECS Service Connect namespace, Secrets Manager secret names, and the full list of outputs the contractor must hand back before the next step can proceed.
+Produce `specs-and-plans/aws-infra-spec.md` specifying what must be provisioned and why, for tech lead sign-off and Infra team execution. The document covers PoC and production-grade tiers, all resource names and sizes, security group rules, IAM requirements, ECS Service Connect namespace, Secrets Manager secret names, and the full list of outputs the Infra team must hand back before the next step can proceed.
 
-Acceptance: tech lead approves the document; contractor has no open questions.
+Acceptance: tech lead approves the document; Infra team has no open questions.
 
 ### Step 4 — PoC AWS deployment
 
-1. Contractor provisions all PoC resources per the approved spec
+1. Infra team provisions all PoC resources per the approved spec
 2. Write ECS task definition JSON files in `ecs/`; plain variables in `environment` array, secrets in `secrets` array referencing Secrets Manager ARNs; per-deployment values use `#{TOKEN}#` pipeline substitution
 3. Add `DeployMonitoring` pipeline stage (build → token substitution → push → register task defs → force-deploy)
-4. Set EB environment properties (`LOKI_URI`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `ENV_NAME`, `SENTRY_DSN`) on all three EB environments using contractor-provided values
+4. Set EB environment properties (`LOKI_URI`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `ENV_NAME`, `SENTRY_DSN`) on all three EB environments using Infra team-provided values
 5. Add source map upload step (`sentry-cli releases upload-sourcemaps`) to the Angular build in the pipeline
 6. Verify Grafana dashboard `env` template variable filters metrics and logs correctly across all EB environments
 
@@ -940,7 +962,7 @@ Acceptance: Grafana accessible via ALB/Cognito URL; metrics and logs from each E
 
 ### Step 5 — Production-grade storage, persistence, and tracing
 
-1. Contractor provisions EFS, S3, RDS, Tempo ECS task per the approved spec
+1. Infra team provisions EFS, S3, RDS, Tempo ECS task per the approved spec
 2. Attach EFS to Prometheus, Loki, and Grafana tasks; update task definitions
 3. Update `loki.yml` to S3 backend
 4. Configure Grafana to use RDS; inject connection details from Secrets Manager; migrate Grafana state from SQLite
@@ -979,15 +1001,17 @@ A self-contained prompt for applying the onboarding pattern to a new service. Pa
 >
 > 3. **Prometheus metrics** — add `prometheus-net.AspNetCore`; call `app.UseHttpMetrics()` and `app.MapPrometheusScrapingEndpoint()` in `Program.cs`. Check whether the service applies `RequireAuthorization()` via a global fallback policy — if so, explicitly exclude the `/metrics` endpoint from that policy (Prometheus scrapes without a token; the VPC security group is the access boundary). Add any service-specific custom metrics (gauges, counters) relevant to this domain.
 >
-> 4. **Serilog Loki sink** — add `Serilog.Sinks.Grafana.Loki`; configure `appsettings.Development.json` to write to `http://loki:3100` with labels `service=<service-name>` and `env=local`; configure `appsettings.Production.json` to write to `#{LOKI_URI}#` with `env` set from `#{ENV_NAME}#`. Both values are injected as EB environment properties at deploy time (`LOKI_URI` is provided by the infrastructure contractor; `ENV_NAME` is `dev`, `staging`, or `production`). **Set `propertiesAsLabels: []` in both config files** — without it the sink promotes every Serilog property to a Loki stream label, which exhausts `max_streams_per_user` at scale.
+> 4. **Serilog Loki sink** — add `Serilog.Sinks.Grafana.Loki`; configure `appsettings.Development.json` to write to `http://loki:3100` with labels `service=<service-name>` and `env=local`; configure `appsettings.Production.json` to write to `#{LOKI_URI}#` with `env` set from `#{ENV_NAME}#`. Both values are injected as EB environment properties at deploy time (`LOKI_URI` is provided by the infrastructure Infra team; `ENV_NAME` is `dev`, `staging`, or `production`). **Set `propertiesAsLabels: []` in both config files** — without it the sink promotes every Serilog property to a Loki stream label, which exhausts `max_streams_per_user` at scale.
 >
 > 5. **OTel .NET SDK** — add `OpenTelemetry.Extensions.Hosting`, `OpenTelemetry.Instrumentation.AspNetCore`, `OpenTelemetry.Instrumentation.Http`, `OpenTelemetry.Exporter.OpenTelemetryProtocol`, `Serilog.Enrichers.OpenTelemetry`; wire OTLP export reading the endpoint from `OTEL_EXPORTER_OTLP_ENDPOINT` env var (default `http://otel-collector:4317` for local); set the `deployment.environment` resource attribute from `ENV_NAME`. Metrics only for now. **Also add `.Enrich.WithOpenTelemetryTraceId().Enrich.WithOpenTelemetrySpanId()` to the Serilog configuration** — this writes `TraceId` and `SpanId` into every log line so Loki→Tempo click-through works once tracing is enabled; fields are empty until then, which is harmless.
 >
-> 6. **`window.__env` runtime config** — check whether the service already has Angular `fileReplacements` configured in `angular.json`; if yes, use those for `envName`, `sentryDsn`, and `otlpEndpoint`. If no, introduce the `window.__env` pattern: the .NET app emits a `<script>window.__env = { envName, sentryDsn, otlpEndpoint }</script>` inline in `index.html` sourced from its own environment variables (`ENV_NAME`, `SENTRY_DSN`, `OTEL_EXPORTER_OTLP_ENDPOINT`). Update `environment.ts` to read from `window.__env` with local fallbacks.
+> 6. **`window.__env` runtime config** — check whether the service already has Angular `fileReplacements` configured in `angular.json`; if yes, use those for `envName` and `sentryDsn`. If no, introduce the `window.__env` pattern: the .NET app emits a `<script>window.__env = { envName, sentryDsn, otlpEndpoint: "/otlp" }</script>` inline in `index.html` sourced from `ENV_NAME` and `SENTRY_DSN`. `otlpEndpoint` is always the hardcoded relative path `"/otlp"` — never an absolute collector URI. Update `environment.ts` to read from `window.__env` with local fallbacks (`otlpEndpoint` fallback is also `"/otlp"`).
 >
 > 7. **Sentry** — add `@sentry/angular` (or `@sentry/vue`); initialise with `dsn: environment.sentryDsn` and `environment: environment.envName`. **Add a `beforeSend` hook that attaches the active OTel trace context as tags:** `const ctx = trace.getActiveSpan()?.spanContext(); if (ctx) event.tags = { ...event.tags, trace_id: ctx.traceId, span_id: ctx.spanId };` — this links Sentry errors back to Loki/Tempo. Add a `sentry-cli releases upload-sourcemaps` step to the Angular build in the pipeline so Sentry can resolve minified stack traces back to TypeScript source.
 >
-> 8. **OTel JS SDK** — add `@opentelemetry/sdk-web` and `@opentelemetry/auto-instrumentations-web`; configure OTLP HTTP export to `environment.otlpEndpoint` (from `window.__env`); set `deployment.environment` resource attribute from `environment.envName`. Metrics only for now. **Add an Angular `HttpInterceptor`** that reads `X-Correlation-ID` from API response headers and calls `Sentry.setTag('correlation_id', value)` — this links frontend Sentry errors to backend Loki log lines.
+> 8. **OTel JS SDK** — add `@opentelemetry/sdk-web` and `@opentelemetry/auto-instrumentations-web`; configure OTLP HTTP export to `environment.otlpEndpoint + '/v1/metrics'` (resolves to `/otlp/v1/metrics` on the app host — same-origin, no CORS); set `deployment.environment` resource attribute from `environment.envName`. Metrics only for now. **Add an Angular `HttpInterceptor`** that reads `X-Correlation-ID` from API response headers and calls `Sentry.setTag('correlation_id', value)` — this links frontend Sentry errors to backend Loki log lines.
+>
+> 8a. **.NET OTLP proxy** — add a minimal reverse-proxy endpoint to the .NET app at `POST /otlp/v1/metrics`. Register an `IHttpClientFactory`-backed `HttpClient` named `otlp-proxy` with base address `http://otel-collector:4318` configured in `appsettings.json`. The handler forwards the request body and `Content-Type` header verbatim to the collector. Exclude `/otlp` from any global `RequireAuthorization()` fallback policy — same principle as `/metrics`. This endpoint is the only path by which Angular metrics reach the collector; the browser never contacts the collector directly.
 >
 > 9. **Report back** the following so the platform config can be updated:
 >    - The service name (to use as the Loki `service` label and Prometheus job name)
@@ -1006,7 +1030,8 @@ A self-contained prompt for applying the onboarding pattern to a new service. Pa
 - All AWS resources in `ap-southeast-2` (Sydney)
 - Existing Elastic Beanstalk environments and VPC are running; RDS cluster is existing or new (TBD)
 - All services in scope are Angular or Vue.js frontends on .NET 10 backends deployed to Elastic Beanstalk
-- All services use Entra (Azure AD) app registrations for auth; `/metrics`, Loki push, and OTLP push endpoints are excluded from auth and rely on VPC security group boundaries
+- All services use Entra (Azure AD) app registrations for auth; `/metrics`, `/otlp`, Loki push, and OTLP push endpoints are excluded from auth and rely on VPC security group boundaries
+- Angular browser telemetry is proxied through the .NET backend at `/otlp` — browsers never reach the OTel Collector directly; this ensures the collector remains private for both cloud and on-premises deployments
 - Sentry free tier (5k errors/month per project) assumed sufficient per service; Team plan ($26/month) if exceeded
 - Platform cost (~$44–82/month) is fixed and shared — per-service marginal cost is config only
 - PoC-tier storage is intentionally ephemeral; accepted until production-grade delivery
